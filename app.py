@@ -104,39 +104,41 @@ class GTXNTCStudio(ctk.CTk):
         self.log_box.delete("1.0", "end")
         threading.Thread(target=self.run_compression, daemon=True).start()
 
-    def run_compression(self):
-        src, dst = self.in_dir.get(), self.out_dir.get()
-        os.makedirs(dst, exist_ok=True)
-        files = [
-            f for f in glob.glob(os.path.join(src, "*.*"))
-            if f.lower().endswith((".png", ".jpg", ".jpeg", ".tga", ".bmp"))
-        ]
-        if not files:
-            self.log("[!] No images found. Browse to a folder containing .png/.jpg textures.")
+   def run_compression(self):
+        try:
+            src, dst = self.in_dir.get(), self.out_dir.get()
+            os.makedirs(dst, exist_ok=True)
+            files = [
+                f for f in glob.glob(os.path.join(src, "*.*"))
+                if f.lower().endswith((".png", ".jpg", ".jpeg", ".tga", ".bmp"))
+            ]
+            if not files:
+                self.log("[!] No images found. Put .png or .jpg files inside the selected folder.")
+                return
+
+            total_raw, total_ntc = 0, 0
+            for f in files:
+                name = os.path.splitext(os.path.basename(f))[0]
+                self.log(f"[...] Training neural weights for {name}...")
+                out_path = os.path.join(dst, f"{name}.ntc")
+                res = self.compressor.compress_image(f, out_path)
+
+                total_raw += res["raw_bytes"]
+                total_ntc += res["ntc_bytes"]
+                self.log(
+                    f"[OK] {name} | Raw: {res['raw_bytes']/1024:.1f} KB -> .ntc: {res['ntc_bytes']/1024:.1f} KB "
+                    f"({res['ratio']:.1f}x smaller) | PSNR: {res['psnr']:.2f} dB"
+                )
+                orig_img = Image.open(f).convert("RGB")
+                self.after(0, lambda o=orig_img, r=res["recon_image"]: self.update_previews(o, r))
+
+            overall = total_raw / max(1, total_ntc)
+            self.log("-" * 68)
+            self.log(f"DONE | Total Raw: {total_raw/1048576:.2f} MB -> .ntc: {total_ntc/1048576:.2f} MB ({overall:.1f}x reduction)")
+        except Exception:
+            self.log("[ERROR] Compression failed:\n" + traceback.format_exc())
+        finally:
             self.after(0, lambda: self.btn_compress.configure(state="normal"))
-            return
-
-        total_raw, total_ntc = 0, 0
-        for f in files:
-            name = os.path.splitext(os.path.basename(f))[0]
-            self.log(f"[...] Training neural weights for {name}...")
-            out_path = os.path.join(dst, f"{name}.ntc")
-            res = self.compressor.compress_image(f, out_path)
-
-            total_raw += res["raw_bytes"]
-            total_ntc += res["ntc_bytes"]
-            self.log(
-                f"[OK] {name} | Raw: {res['raw_bytes']/1024:.1f} KB -> .ntc: {res['ntc_bytes']/1024:.1f} KB "
-                f"({res['ratio']:.1f}x smaller) | PSNR: {res['psnr']:.2f} dB"
-            )
-            orig_img = Image.open(f).convert("RGB")
-            self.after(0, lambda o=orig_img, r=res["recon_image"]: self.update_previews(o, r))
-
-        overall = total_raw / max(1, total_ntc)
-        self.log("-" * 68)
-        self.log(f"DONE | Total Raw: {total_raw/1048576:.2f} MB -> .ntc: {total_ntc/1048576:.2f} MB ({overall:.1f}x reduction)")
-        self.after(0, lambda: self.btn_compress.configure(state="normal"))
-
     # ---------------- TAB 2: GAME OPTIMIZER ----------------
     def build_game_tab(self):
         ctk.CTkLabel(
