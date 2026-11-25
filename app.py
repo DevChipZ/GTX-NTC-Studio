@@ -21,8 +21,7 @@ class GTXNTCStudio(ctk.CTk):
         super().__init__()
         self.title("GTX-NTC Studio | 4GB VRAM Neural Texture Pipeline")
         self.geometry("920x660")
-        self.compressor = GTXNeuralCompressor(hidden_dim=16, steps=120, lr=0.02)
-
+       self.compressor = GTXNeuralCompressor(hidden_dim=16, steps=120, lr=0.02)
         ctk.CTkLabel(
             self, text="GTX-NTC Studio", font=ctk.CTkFont(size=24, weight="bold")
         ).pack(pady=(12, 2))
