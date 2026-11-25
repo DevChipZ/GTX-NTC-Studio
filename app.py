@@ -23,6 +23,7 @@ class GTXNTCStudio(ctk.CTk):
         self.title("GTX-NTC Studio | 4GB VRAM Neural Texture Pipeline")
         self.geometry("920x660")
         self.compressor = GTXNeuralCompressor()
+
         ctk.CTkLabel(
             self, text="GTX-NTC Studio", font=ctk.CTkFont(size=24, weight="bold")
         ).pack(pady=(12, 2))
@@ -68,7 +69,6 @@ class GTXNTCStudio(ctk.CTk):
         )
         self.btn_compress.pack(pady=8)
 
-        # Side-by-side preview
         preview_frame = ctk.CTkFrame(self.tab_compress)
         preview_frame.pack(fill="x", padx=10, pady=4)
         preview_frame.grid_columnconfigure((0, 1), weight=1)
@@ -104,7 +104,7 @@ class GTXNTCStudio(ctk.CTk):
         self.log_box.delete("1.0", "end")
         threading.Thread(target=self.run_compression, daemon=True).start()
 
-   def run_compression(self):
+    def run_compression(self):
         try:
             src, dst = self.in_dir.get(), self.out_dir.get()
             os.makedirs(dst, exist_ok=True)
@@ -139,6 +139,7 @@ class GTXNTCStudio(ctk.CTk):
             self.log("[ERROR] Compression failed:\n" + traceback.format_exc())
         finally:
             self.after(0, lambda: self.btn_compress.configure(state="normal"))
+
     # ---------------- TAB 2: GAME OPTIMIZER ----------------
     def build_game_tab(self):
         ctk.CTkLabel(
