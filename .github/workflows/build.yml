@@ -1,0 +1,35 @@
+name: Build GTX-NTC Studio EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build Windows EXE
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --collect-all customtkinter --name "GTX-NTC-Studio" app.py
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: GTX-NTC Studio v1.0.0 (Windows)
+          files: dist/GTX-NTC-Studio.exe
