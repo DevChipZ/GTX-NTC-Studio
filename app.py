@@ -174,7 +174,7 @@ class GTXNTCStudio(ctk.CTk):
         os.makedirs(dds_out, exist_ok=True)
         files = [
             f for f in glob.glob(os.path.join(self.in_dir.get(), "*.*"))
-            if f.lower().endswith((".png", ".jpg", ".jpeg", ".tga"))
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".tga", ".dds"))
         ]
         if not files:
             messagebox.showwarning("No Textures", "Select an Input Textures folder in Tab 1 first.")
