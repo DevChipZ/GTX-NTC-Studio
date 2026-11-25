@@ -4,6 +4,7 @@ import glob
 import webbrowser
 import subprocess
 import threading
+import traceback
 from PIL import Image
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
