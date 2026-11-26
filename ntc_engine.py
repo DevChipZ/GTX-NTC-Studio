@@ -6,13 +6,13 @@ from PIL import Image
 
 class GTXNeuralCompressor:
     """
-    Lightweight GTX-compatible Neural Texture Compression (NTC):
-    - 2D Latent Feature Grid (quantized to INT8)
-    - Tiny 2-layer MLP decoder (quantized to FP16)
-    Runs without RTX Tensor Cores.
+    High-Fidelity GTX-compatible Neural Texture Compression (NTC):
+    - RGB-initialized 2D Latent Feature Grid (percentile-clamped INT8)
+    - Residual-initialized 2-layer MLP decoder (FP16)
+    Runs at full speed on GTX shader cores without Tensor Cores.
     """
 
-    def __init__(self, latent_dim=6, hidden_dim=16, grid_div=4):
+    def __init__(self, latent_dim=6, hidden_dim=16, grid_div=2):
         self.latent_dim = latent_dim
         self.hidden_dim = hidden_dim
         self.grid_div = grid_div
@@ -43,7 +43,7 @@ class GTXNeuralCompressor:
         )
         return f, (y0, x0, y1, x1, w00, w01, w10, w11)
 
-    def compress_image(self, image_path, output_ntc_path, steps=180, batch_size=16384, progress_cb=None):
+    def compress_image(self, image_path, output_ntc_path, steps=300, batch_size=24576, progress_cb=None):
         img = Image.open(image_path).convert("RGB")
         arr = np.array(img, dtype=np.float32) / 255.0
         H, W, _ = arr.shape
@@ -53,29 +53,39 @@ class GTXNeuralCompressor:
         gw = max(4, W // self.grid_div)
 
         rng = np.random.default_rng(42)
-        grid = (rng.standard_normal((gh, gw, self.latent_dim)) * 0.1).astype(np.float32)
-        W1 = (rng.standard_normal((self.latent_dim, self.hidden_dim)) * np.sqrt(2.0 / self.latent_dim)).astype(np.float32)
-        b1 = np.zeros(self.hidden_dim, dtype=np.float32)
-        W2 = (rng.standard_normal((self.hidden_dim, 3)) * np.sqrt(2.0 / self.hidden_dim)).astype(np.float32)
-        b2 = np.full(3, 0.5, dtype=np.float32)
 
-        # Adam optimizer state
+        # Smart RGB initialization: channels 0..2 start as downsampled RGB,
+        # channels 3..5 learn high-frequency detail residuals.
+        down_rgb = np.array(img.resize((gw, gh), Image.BILINEAR), dtype=np.float32) / 255.0
+        grid = np.empty((gh, gw, self.latent_dim), dtype=np.float32)
+        grid[:, :, :3] = down_rgb
+        grid[:, :, 3:] = rng.standard_normal((gh, gw, self.latent_dim - 3)).astype(np.float32) * 0.05
+
+        # Identity-anchored MLP so step 0 already reproduces base colors cleanly
+        W1 = (rng.standard_normal((self.latent_dim, self.hidden_dim)) * 0.04).astype(np.float32)
+        W1[:3, :3] = np.eye(3, dtype=np.float32)
+        b1 = np.zeros(self.hidden_dim, dtype=np.float32)
+
+        W2 = (rng.standard_normal((self.hidden_dim, 3)) * 0.04).astype(np.float32)
+        W2[:3, :3] = np.eye(3, dtype=np.float32)
+        b2 = np.zeros(3, dtype=np.float32)
+
         params = [grid, W1, b1, W2, b2]
         m = [np.zeros_like(p) for p in params]
         v = [np.zeros_like(p) for p in params]
-        lr = 0.03
+        lr_max, lr_min = 0.02, 0.001
         beta1, beta2, eps = 0.9, 0.999, 1e-8
 
         total_pixels = H * W
         flat_target = arr.reshape(-1, 3)
 
         for step in range(1, steps + 1):
+            lr = lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * step / steps))
             idx = rng.integers(0, total_pixels, size=min(batch_size, total_pixels))
             ys = idx // W
             xs = idx % W
             target = flat_target[idx]
 
-            # Forward pass
             f, cache = self._sample_grid(grid, ys, xs, H, W)
             z1 = f @ W1 + b1
             h1 = np.maximum(0.0, z1)
@@ -84,7 +94,6 @@ class GTXNeuralCompressor:
             diff = pred - target
             d_out = (2.0 / len(idx)) * diff
 
-            # Backward pass
             dW2 = h1.T @ d_out
             db2 = d_out.sum(axis=0)
             dh1 = d_out @ W2.T
@@ -108,14 +117,14 @@ class GTXNeuralCompressor:
                 v_hat = v[i] / (1.0 - beta2 ** step)
                 params[i] -= lr * m_hat / (np.sqrt(v_hat) + eps)
 
-            if progress_cb and step % 45 == 0:
+            if progress_cb and step % 50 == 0:
                 mse = float(np.mean(diff ** 2))
                 psnr = -10.0 * math.log10(max(mse, 1e-10))
                 progress_cb(step, steps, psnr)
 
-        # Quantize Latent Grid -> INT8, MLP -> FP16
-        g_min = float(grid.min())
-        g_max = float(grid.max())
+        # Percentile-clamped INT8 quantization (prevents outlier precision loss)
+        g_min = float(np.percentile(grid, 0.2))
+        g_max = float(np.percentile(grid, 99.8))
         scale = float((g_max - g_min) / 255.0 + 1e-8)
         q_grid = np.clip(np.round((grid - g_min) / scale), 0, 255).astype(np.uint8)
 
@@ -134,7 +143,6 @@ class GTXNeuralCompressor:
         with open(output_ntc_path, "wb") as f_out:
             f_out.write(ntc_data)
 
-        # Decode back to verify exact PSNR
         recon_img = self.decode_ntc(output_ntc_path)
         recon_arr = np.array(recon_img, dtype=np.float32) / 255.0
         final_mse = float(np.mean((recon_arr - arr) ** 2))
