@@ -25,7 +25,7 @@ jobs:
 
       - name: Build Windows EXE
         run: |
-          pyinstaller --noconfirm --onefile --windowed --collect-all customtkinter --name "GTX-NTC-Studio" app.py
+          pyinstaller --noconfirm --onefile --windowed --collect-all customtkinter --collect-all glfw --hidden-import glcontext --name "GTX-NTC-Studio" app.py
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
