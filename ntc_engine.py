@@ -7,8 +7,9 @@ from PIL import Image
 class GTXNeuralCompressor:
     """
     High-Fidelity GTX-compatible Neural Texture Compression (NTC):
-    - RGB-initialized 2D Latent Feature Grid (percentile-clamped INT8)
+    - Lanczos RGB-initialized 2D Latent Feature Grid (percentile-clamped INT8)
     - Residual-initialized 2-layer MLP decoder (FP16)
+    - Full-epoch shuffled training (eliminates sampling grain)
     Runs at full speed on GTX shader cores without Tensor Cores.
     """
 
@@ -43,7 +44,7 @@ class GTXNeuralCompressor:
         )
         return f, (y0, x0, y1, x1, w00, w01, w10, w11)
 
-    def compress_image(self, image_path, output_ntc_path, steps=300, batch_size=24576, progress_cb=None):
+    def compress_image(self, image_path, output_ntc_path, epochs=4, batch_size=65536, progress_cb=None):
         img = Image.open(image_path).convert("RGB")
         arr = np.array(img, dtype=np.float32) / 255.0
         H, W, _ = arr.shape
@@ -54,77 +55,82 @@ class GTXNeuralCompressor:
 
         rng = np.random.default_rng(42)
 
-        # Smart RGB initialization: channels 0..2 start as downsampled RGB,
-        # channels 3..5 learn high-frequency detail residuals.
-        down_rgb = np.array(img.resize((gw, gh), Image.BILINEAR), dtype=np.float32) / 255.0
+        # Crisp, artifact-free Lanczos base for channels 0..2
+        down_rgb = np.array(img.resize((gw, gh), Image.LANCZOS), dtype=np.float32) / 255.0
         grid = np.empty((gh, gw, self.latent_dim), dtype=np.float32)
         grid[:, :, :3] = down_rgb
-        grid[:, :, 3:] = rng.standard_normal((gh, gw, self.latent_dim - 3)).astype(np.float32) * 0.05
+        grid[:, :, 3:] = rng.standard_normal((gh, gw, self.latent_dim - 3)).astype(np.float32) * 0.02
 
-        # Identity-anchored MLP so step 0 already reproduces base colors cleanly
-        W1 = (rng.standard_normal((self.latent_dim, self.hidden_dim)) * 0.04).astype(np.float32)
+        # Identity-anchored MLP
+        W1 = (rng.standard_normal((self.latent_dim, self.hidden_dim)) * 0.02).astype(np.float32)
         W1[:3, :3] = np.eye(3, dtype=np.float32)
         b1 = np.zeros(self.hidden_dim, dtype=np.float32)
 
-        W2 = (rng.standard_normal((self.hidden_dim, 3)) * 0.04).astype(np.float32)
+        W2 = (rng.standard_normal((self.hidden_dim, 3)) * 0.02).astype(np.float32)
         W2[:3, :3] = np.eye(3, dtype=np.float32)
         b2 = np.zeros(3, dtype=np.float32)
 
         params = [grid, W1, b1, W2, b2]
         m = [np.zeros_like(p) for p in params]
         v = [np.zeros_like(p) for p in params]
-        lr_max, lr_min = 0.02, 0.001
+        lr_max, lr_min = 0.006, 0.0005
         beta1, beta2, eps = 0.9, 0.999, 1e-8
 
         total_pixels = H * W
         flat_target = arr.reshape(-1, 3)
+        steps_per_epoch = math.ceil(total_pixels / batch_size)
+        total_steps = epochs * steps_per_epoch
+        step = 0
 
-        for step in range(1, steps + 1):
-            lr = lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * step / steps))
-            idx = rng.integers(0, total_pixels, size=min(batch_size, total_pixels))
-            ys = idx // W
-            xs = idx % W
-            target = flat_target[idx]
+        for _ in range(epochs):
+            perm = rng.permutation(total_pixels)
+            for start in range(0, total_pixels, batch_size):
+                step += 1
+                lr = lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * step / total_steps))
+                idx = perm[start : start + batch_size]
+                ys = idx // W
+                xs = idx % W
+                target = flat_target[idx]
 
-            f, cache = self._sample_grid(grid, ys, xs, H, W)
-            z1 = f @ W1 + b1
-            h1 = np.maximum(0.0, z1)
-            pred = h1 @ W2 + b2
+                f, cache = self._sample_grid(grid, ys, xs, H, W)
+                z1 = f @ W1 + b1
+                h1 = np.maximum(0.0, z1)
+                pred = h1 @ W2 + b2
 
-            diff = pred - target
-            d_out = (2.0 / len(idx)) * diff
+                diff = pred - target
+                d_out = (2.0 / len(idx)) * diff
 
-            dW2 = h1.T @ d_out
-            db2 = d_out.sum(axis=0)
-            dh1 = d_out @ W2.T
-            dh1[z1 <= 0.0] = 0.0
-            dW1 = f.T @ dh1
-            db1 = dh1.sum(axis=0)
-            df = dh1 @ W1.T
+                dW2 = h1.T @ d_out
+                db2 = d_out.sum(axis=0)
+                dh1 = d_out @ W2.T
+                dh1[z1 <= 0.0] = 0.0
+                dW1 = f.T @ dh1
+                db1 = dh1.sum(axis=0)
+                df = dh1 @ W1.T
 
-            y0, x0, y1, x1, w00, w01, w10, w11 = cache
-            d_grid = np.zeros_like(grid)
-            np.add.at(d_grid, (y0, x0), df * w00)
-            np.add.at(d_grid, (y0, x1), df * w01)
-            np.add.at(d_grid, (y1, x0), df * w10)
-            np.add.at(d_grid, (y1, x1), df * w11)
+                y0, x0, y1, x1, w00, w01, w10, w11 = cache
+                d_grid = np.zeros_like(grid)
+                np.add.at(d_grid, (y0, x0), df * w00)
+                np.add.at(d_grid, (y0, x1), df * w01)
+                np.add.at(d_grid, (y1, x0), df * w10)
+                np.add.at(d_grid, (y1, x1), df * w11)
 
-            grads = [d_grid, dW1, db1, dW2, db2]
-            for i in range(len(params)):
-                m[i] = beta1 * m[i] + (1.0 - beta1) * grads[i]
-                v[i] = beta2 * v[i] + (1.0 - beta2) * (grads[i] ** 2)
-                m_hat = m[i] / (1.0 - beta1 ** step)
-                v_hat = v[i] / (1.0 - beta2 ** step)
-                params[i] -= lr * m_hat / (np.sqrt(v_hat) + eps)
+                grads = [d_grid, dW1, db1, dW2, db2]
+                for i in range(len(params)):
+                    m[i] = beta1 * m[i] + (1.0 - beta1) * grads[i]
+                    v[i] = beta2 * v[i] + (1.0 - beta2) * (grads[i] ** 2)
+                    m_hat = m[i] / (1.0 - beta1 ** step)
+                    v_hat = v[i] / (1.0 - beta2 ** step)
+                    params[i] -= lr * m_hat / (np.sqrt(v_hat) + eps)
 
-            if progress_cb and step % 50 == 0:
+            if progress_cb:
                 mse = float(np.mean(diff ** 2))
                 psnr = -10.0 * math.log10(max(mse, 1e-10))
-                progress_cb(step, steps, psnr)
+                progress_cb(step, total_steps, psnr)
 
-        # Percentile-clamped INT8 quantization (prevents outlier precision loss)
-        g_min = float(np.percentile(grid, 0.2))
-        g_max = float(np.percentile(grid, 99.8))
+        # Percentile-clamped INT8 quantization
+        g_min = float(np.percentile(grid, 0.1))
+        g_max = float(np.percentile(grid, 99.9))
         scale = float((g_max - g_min) / 255.0 + 1e-8)
         q_grid = np.clip(np.round((grid - g_min) / scale), 0, 255).astype(np.uint8)
 
