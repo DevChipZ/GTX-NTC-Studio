@@ -189,45 +189,87 @@ class GTXNTCStudio(ctk.CTk):
             )
         self.dds_status.configure(text=f"Done! Saved {len(files)} 4GB-safe .dds files to {dds_out}", text_color="lightgreen")
 
-    # ---------------- TAB 3: LIVE GTX PROOF ----------------
+    # ---------------- TAB 3: LIVE GTX GPU DECODER ----------------
     def build_live_tab(self):
         ctk.CTkLabel(
             self.tab_live,
-            text="Real-Time GTX Neural Texture Renderer (Native 1080p)",
+            text="Standard Live GPU Neural Texture Decoder (OpenGL 3.3 / GTX)",
             font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(pady=(35, 8))
+        ).pack(pady=(22, 6))
         ctk.CTkLabel(
             self.tab_live,
-            text="Launches NVIDIA RTXNTC Renderer with --dx12 --no-coopVec\nto prove live neural texture decompression on non-Tensor-Core GTX GPUs.",
+            text="Decodes any .ntc file (INT8 Latent Grid + FP16 MLP) live on GTX shader cores\nwith real-time FPS, frametime (ms), and VRAM telemetry. No Tensor Cores required.",
             text_color="gray",
-        ).pack(pady=(0, 22))
+        ).pack(pady=(0, 16))
+
+        picker = ctk.CTkFrame(self.tab_live)
+        picker.pack(fill="x", padx=24, pady=8)
+        self.ntc_file = ctk.StringVar(value="")
+        ctk.CTkLabel(picker, text=".ntc File:").grid(row=0, column=0, padx=10, pady=8, sticky="w")
+        ctk.CTkEntry(picker, textvariable=self.ntc_file, width=540).grid(row=0, column=1, padx=5)
+        ctk.CTkButton(picker, text="Browse", width=85, command=self.pick_ntc_file).grid(row=0, column=2, padx=8)
+
         ctk.CTkButton(
             self.tab_live,
-            text="Launch Local RTXNTC Renderer",
+            text="Launch Live GPU Decoder (.ntc Shader)",
             height=46,
-            width=330,
+            width=360,
             font=ctk.CTkFont(size=14, weight="bold"),
-            command=self.launch_renderer,
-        ).pack(pady=8)
+            command=self.launch_live_gpu_decoder,
+        ).pack(pady=(14, 8))
+
         ctk.CTkButton(
             self.tab_live,
-            text="Download NVIDIA RTXNTC SDK (v0.10.1b)",
+            text="Launch Optional NVIDIA RTXNTC (--dx12 --no-coopVec)",
             height=36,
-            width=330,
+            width=360,
             fg_color="gray30",
-            command=lambda: webbrowser.open("https://github.com/NVIDIA-RTX/RTXNTC/releases"),
-        ).pack(pady=8)
+            command=self.launch_renderer,
+        ).pack(pady=6)
+
+        self.live_status = ctk.CTkLabel(self.tab_live, text="Select any .ntc file from Tab 1 to decode live on GPU.", text_color="gray")
+        self.live_status.pack(pady=10)
+
+    def pick_ntc_file(self):
+        path = filedialog.askopenfilename(
+            initialdir=self.out_dir.get(),
+            filetypes=[("Neural Texture Compression", "*.ntc"), ("All Files", "*.*")],
+        )
+        if path:
+            self.ntc_file.set(path)
+
+    def launch_live_gpu_decoder(self):
+        target = self.ntc_file.get().strip()
+        if not target or not os.path.exists(target):
+            # Auto-pick the newest .ntc file in Output Folder if none selected
+            candidates = glob.glob(os.path.join(self.out_dir.get(), "*.ntc"))
+            if candidates:
+                target = max(candidates, key=os.path.getmtime)
+                self.ntc_file.set(target)
+            else:
+                messagebox.showwarning("No .ntc File", "Compress a texture in Tab 1 first or browse for a .ntc file.")
+                return
+
+        self.live_status.configure(text=f"Running Live GPU Decoder: {os.path.basename(target)}", text_color="lightgreen")
+        if getattr(sys, "frozen", False):
+            subprocess.Popen([sys.executable, "--live-decode", target])
+        else:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "--live-decode", target])
 
     def launch_renderer(self):
         matches = glob.glob(os.path.join(APP_DIR, "**", "*Renderer*.exe"), recursive=True)
         if not matches:
             messagebox.showinfo(
                 "Renderer Not Found",
-                "Unzip RTXNTC_windows_x64_v0.10.1b.zip into this app's folder to launch live.",
+                "Optional: Unzip RTXNTC_windows_x64_v0.10.1b.zip into this app's folder to launch NVIDIA's renderer.",
             )
             return
         subprocess.Popen([matches[0], "--dx12", "--no-coopVec"], cwd=os.path.dirname(matches[0]))
 
 
 if __name__ == "__main__":
-    GTXNTCStudio().mainloop()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--live-decode":
+        from live_decoder import run_live_decoder
+        run_live_decoder(sys.argv[2])
+    else:
+        GTXNTCStudio().mainloop()
