@@ -1,4 +1,6 @@
 customtkinter
 pillow
 numpy
+moderngl
+glfw
 pyinstaller
