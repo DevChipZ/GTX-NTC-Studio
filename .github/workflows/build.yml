@@ -27,9 +27,16 @@ jobs:
         run: |
           pyinstaller --noconfirm --onefile --windowed --collect-all customtkinter --collect-all glfw --hidden-import glcontext --name "GTX-NTC-Studio" app.py
 
+      - name: Build Live DX12 Proxy DLL (dxgi.dll)
+        run: |
+          cmake -S proxy -B proxy/build -A x64
+          cmake --build proxy/build --config Release
+
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0
           name: GTX-NTC Studio v1.0.0 (Windows)
-          files: dist/GTX-NTC-Studio.exe
+          files: |
+            dist/GTX-NTC-Studio.exe
+            proxy/build/Release/dxgi.dll
